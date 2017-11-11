@@ -1498,12 +1498,7 @@ func CleanUp(f Fs) error {
 // wrap a Reader and a Closer together into a ReadCloser
 type readCloser struct {
 	io.Reader
-	Closer io.Closer
-}
-
-// Close the Closer
-func (r *readCloser) Close() error {
-	return r.Closer.Close()
+	io.Closer
 }
 
 // Cat any files to the io.Writer
@@ -1566,11 +1561,12 @@ func Cat(f Fs, w io.Writer, offset, count int64) error {
 }
 
 // Rcat reads data from the Reader until EOF and uploads it to a file on remote
-func Rcat(fdst Fs, dstFileName string, in0 io.ReadCloser, modTime time.Time) (dst Object, err error) {
+func Rcat(fdst Fs, dstFileName string, in io.ReadCloser, modTime time.Time) (dst Object, err error) {
 	Stats.Transferring(dstFileName)
+	in = NewAccountSizeName(in, -1, dstFileName).WithBuffer()
 	defer func() {
 		Stats.DoneTransferring(dstFileName, err == nil)
-		if otherErr := in0.Close(); otherErr != nil {
+		if otherErr := in.Close(); otherErr != nil {
 			Debugf(fdst, "Rcat: failed to close source: %v", err)
 		}
 	}()
@@ -1580,7 +1576,7 @@ func Rcat(fdst Fs, dstFileName string, in0 io.ReadCloser, modTime time.Time) (ds
 	if err != nil {
 		return nil, err
 	}
-	readCounter := NewCountingReader(in0)
+	readCounter := NewCountingReader(in)
 	trackingIn := io.TeeReader(readCounter, hash)
 
 	compare := func(dst Object) error {
@@ -1599,7 +1595,6 @@ func Rcat(fdst Fs, dstFileName string, in0 io.ReadCloser, modTime time.Time) (ds
 	if n, err := io.ReadFull(trackingIn, buf); err == io.EOF || err == io.ErrUnexpectedEOF {
 		Debugf(fdst, "File to upload is small (%d bytes), uploading instead of streaming", n)
 		in := ioutil.NopCloser(bytes.NewReader(buf[:n]))
-		in = NewAccountSizeName(in, int64(n), dstFileName).WithBuffer()
 		objInfo := NewStaticObjectInfo(dstFileName, modTime, int64(n), false, nil, nil)
 		if Config.DryRun {
 			Logf("stdin", "Not uploading as --dry-run")
@@ -1611,7 +1606,12 @@ func Rcat(fdst Fs, dstFileName string, in0 io.ReadCloser, modTime time.Time) (ds
 		}
 		return dst, compare(dst)
 	}
-	in := ioutil.NopCloser(io.MultiReader(bytes.NewReader(buf), trackingIn))
+
+	// Make a new ReadCloser with the bits we've already read
+	in = &readCloser{
+		Reader: io.MultiReader(bytes.NewReader(buf), trackingIn),
+		Closer: in,
+	}
 
 	fStreamTo := fdst
 	canStream := fdst.Features().PutStream != nil
@@ -1629,8 +1629,6 @@ func Rcat(fdst Fs, dstFileName string, in0 io.ReadCloser, modTime time.Time) (ds
 		}()
 		fStreamTo = tmpLocalFs
 	}
-
-	in = NewAccountSizeName(in, -1, dstFileName).WithBuffer()
 
 	if Config.DryRun {
 		Logf("stdin", "Not uploading as --dry-run")
