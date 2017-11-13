@@ -39,6 +39,7 @@ func mountOptions(device string, mountpoint string) (options []string) {
 		"-o", "fsname=" + device,
 		"-o", "subtype=rclone",
 		"-o", fmt.Sprintf("max_readahead=%d", mountlib.MaxReadAhead),
+		"-o", "atomic_o_trunc",
 	}
 	if mountlib.DebugFUSE {
 		options = append(options, "-o", "debug")
